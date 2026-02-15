@@ -107,17 +107,16 @@ See [**ARCHITECTURE.md**](ARCHITECTURE.md) for a deep dive.
 
 We welcome contributions! Please follow this workflow:
 
-1.  **Create a new branch** from `dev`:
+1. **Fork the repository** on GitHub and clone your fork.
+2. **Create a new branch** from `dev`:
     ```bash
     git checkout dev
     git checkout -b feature/your-feature-name
     ```
-2.  **Make your changes** and commit them.
-
-3.  **Commit Messages**: Please follow this format:
-    -   `feat: Implemented new feature...`
-    -   `bugfix: Fixed specific bug...`
-    -   `docs: Updated documentation...`
-    -   `refactor: Code cleanup or restructuring...`
-
-4.  **Open a Pull Request** targeting the `dev` branch.
+3. **Make your changes** and commit them.
+4. **Commit Messages**: Please follow this format:
+    - `feat: ...`
+    - `bugfix: ...`
+    - `docs: ...`
+    - `refactor: ...`
+5. **Open a Pull Request** targeting the `dev` branch.
