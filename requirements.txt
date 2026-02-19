@@ -6,3 +6,4 @@ numpy
 sentence-transformers
 torch
 rank_bm25
+beautifulsoup4
