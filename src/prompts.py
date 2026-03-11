@@ -1,8 +1,8 @@
 from typing import List, Dict, Optional
 
 def refine_query_prompt(user_question: str, project_context: str, file_structure: str) -> str:
-    return f"""You are a senior software architect. A developer has asked a question about a codebase. 
-Your goal is to translate this question into a structured "Information Need" that can guide a search engine.
+    return f"""You are a senior software architect. A developer has asked a question or given a command about a codebase. 
+Your goal is to translate this request into a structured "Information Need" that can guide a search engine, OR identify if it's a direct action command.
 
 Project Context:
 {project_context}
@@ -12,18 +12,20 @@ File Structure:
 {file_structure[:2000]}
 ```
 
-User Question: "{user_question}"
+User Request: "{user_question}"
 
 TASK:
 1. Identify the **Technical Intent** (e.g., "Persistence layer implementation", "Service initialization flow").
 2. Formulate a **Refined Question** that is more descriptive and technical.
 3. Suggest 5-10 **Technical Keywords** or likely symbol names (classes/functions) to search for.
+4. Determine if the user is asking a direct action command (e.g., "Create a file", "Run a test", "Fix this bug") rather than a search query (e.g., "Where is the auth logic?"). Set `is_action_request` to true if it is an action.
 
 Return ONLY a JSON object with this structure:
 {{
   "intent": "string",
   "refined_question": "string",
-  "keywords": ["list", "of", "strings"]
+  "keywords": ["list", "of", "strings"],
+  "is_action_request": boolean
 }}"""
 
 def identify_relevant_files_prompt(user_question: str, file_structure: str, minimap_hint: str) -> str:
@@ -145,6 +147,52 @@ Format:
 
 Context (Truncated):
 {context}
+"""
+
+def decide_action_prompt(user_question: str, context: str, history_str: str, project_structure: str, available_tools: str) -> str:
+    return f"""You are an autonomous AI software engineer. The user has asked a question or requested a task.
+Based on the provided codebase context and the current state, you must decide what to do next.
+
+AVAILABLE TOOLS:
+{available_tools}
+
+CURRENT CONTEXT:
+{context[:20000]}
+
+PROJECT STRUCTURE:
+```
+{project_structure[:5000]}
+```
+
+CONVERSATION HISTORY:
+{history_str}
+
+USER REQUEST: {user_question}
+
+TASK:
+You must choose exactly one of two options:
+1. **Take an Action**: If you need to edit a file, read a file to get more context, etc. You must use one of the available tools.
+2. **Final Answer**: If you have completed the user's request, or have gathered enough information to answer the question perfectly without further actions.
+
+You must respond with ONLY a valid JSON object. 
+
+Format for taking an action:
+{{
+  "action": "tool_call",
+  "tool": "<tool_name_from_available_tools>",
+  "method": "<method_name>",
+  "args": {{
+     "param1": "value1"
+  }},
+  "thought": "I need to read this file because..."
+}}
+
+Format for final answer:
+{{
+  "action": "final_answer",
+  "content": "Here is the final answer to your question...",
+  "thought": "I have all the context needed, I will now answer."
+}}
 """
 
 def verify_answer_prompt(question: str, answer: str, context: str) -> str:

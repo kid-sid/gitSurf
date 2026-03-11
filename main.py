@@ -141,6 +141,19 @@ def main():
                     project_context = llm.analyze_project_context(readme_content)
                 search_path = repo_mgr.sync_repo(args.github_repo)
     
+    # Initialize Agent Tools
+    from src.tools.file_editor_tool import FileEditorTool
+    file_editor = FileEditorTool(root_path=search_path)
+    
+    available_tools = """
+    Tool: FileEditorTool
+    Description: Allows you to read, write, and modify files within the project. Only use files within the project.
+    Methods:
+      - read_file(rel_path, start_line=None, end_line=None): Reads a file or specific lines (1-indexed). Returns string.
+      - write_file(rel_path, content): Creates or overwrites a file. Returns string.
+      - replace_in_file(rel_path, target, replacement): Replaces an exact string block with another. Returns string.
+    """
+
     # --- Determine search mode ---
     is_code_search = args.github_repo is not None
 
@@ -179,161 +192,285 @@ def main():
         query_to_use = refined_data.get("refined_question", args.question)
         technical_intent = refined_data.get("intent", "General search")
         expansion_keywords = refined_data.get("keywords", [])
+        is_action_request = refined_data.get("is_action_request", False)
         
         print(f"   Intent: {technical_intent}")
         if query_to_use != args.question:
             print(f"   Refined Question: {query_to_use}")
 
-        # Step 3: Skeleton Analysis — LLM identifies relevant files
-        print("[Step 3/8] Skeleton Analysis (identifying relevant files)...")
-        targeted_files = []
-        skeleton_context = ""
-        if project_structure:
-            targeted_files = llm.identify_relevant_files(query_to_use, project_structure, symbol_minimap=symbol_minimap)
-            if targeted_files:
-                skeleton_context = "Targeted files:\n" + "\n".join(f"  - {f}" for f in targeted_files)
-
-        # Step 4: Targeted File Retrieval — read full content of identified files
-        print("[Step 4/8] Targeted File Retrieval...")
-        from src.tools.targeted_retriever import TargetedRetriever
-        targeted_retriever = TargetedRetriever(cache_path=search_path)
-        targeted_chunks = []
-        if targeted_files:
-            targeted_chunks = targeted_retriever.retrieve_files(targeted_files)
-            print(f"   Retrieved {len(targeted_chunks)} targeted file(s)")
+        if is_action_request:
+            print(f"   [Fast-Path] Action command detected. Skipping search pipeline (Steps 3-7).")
+            top_chunks = []
+            targeted_chunks = []
+            call_graph_context = ""
+            skeleton_context = ""
         else:
-            print("   No targeted files identified, relying on search only")
+            # Step 3: Skeleton Analysis — LLM identifies relevant files
+            print("[Step 3/8] Skeleton Analysis (identifying relevant files)...")
+            targeted_files = []
+            skeleton_context = ""
+            if project_structure:
+                targeted_files = llm.identify_relevant_files(query_to_use, project_structure, symbol_minimap=symbol_minimap)
+                if targeted_files:
+                    skeleton_context = "Targeted files:\n" + "\n".join(f"  - {f}" for f in targeted_files)
 
-        # Step 5: Symbol Extraction + Call Graph
-        print("[Step 5/8] Code Analysis (Symbols + Call Graph)...")
-        from src.tools.symbol_extractor import SymbolExtractor
-        from src.tools.call_graph import CallGraph
+            # Step 4: Targeted File Retrieval — read full content of identified files
+            print("[Step 4/8] Targeted File Retrieval...")
+            from src.tools.targeted_retriever import TargetedRetriever
+            targeted_retriever = TargetedRetriever(cache_path=search_path)
+            targeted_chunks = []
+            if targeted_files:
+                targeted_chunks = targeted_retriever.retrieve_files(targeted_files)
+                print(f"   Retrieved {len(targeted_chunks)} targeted file(s)")
+            else:
+                print("   No targeted files identified, relying on search only")
 
-        sym_extractor = SymbolExtractor(cache_dir=os.path.join(".cache", "symbols"))
-        symbol_index = sym_extractor.extract_from_directory(search_path, force_rebuild=args.rebuild_index)
+            # Step 5: Symbol Extraction + Call Graph
+            print("[Step 5/8] Code Analysis (Symbols + Call Graph)...")
+            from src.tools.symbol_extractor import SymbolExtractor
+            from src.tools.call_graph import CallGraph
 
-        call_graph = CallGraph(cache_dir=os.path.join(".cache", "call_graph"))
-        call_graph.build_from_symbols(symbol_index, force_rebuild=args.rebuild_index)
+            sym_extractor = SymbolExtractor(cache_dir=os.path.join(".cache", "symbols"))
+            symbol_index = sym_extractor.extract_from_directory(search_path, force_rebuild=args.rebuild_index)
 
-        # Step 6: Triple-Hybrid Search (guided by skeleton)
-        print("[Step 6/8] Triple-Hybrid Search (Skeleton-Guided)...")
+            call_graph = CallGraph(cache_dir=os.path.join(".cache", "call_graph"))
+            call_graph.build_from_symbols(symbol_index, force_rebuild=args.rebuild_index)
 
-        emb_client = EmbeddingClient()
-        vector_tool = VectorSearchTool(
-            embedding_client=emb_client,
-            cache_dir=os.path.join(".cache", "vector_index")
-        )
-        vector_tool.build_index_with_symbols(search_path, symbol_index, force_rebuild=args.rebuild_index)
-        vector_results = vector_tool.search(query_to_use, top_k=20)
+            # Step 6: Triple-Hybrid Search (guided by skeleton)
+            print("[Step 6/8] Triple-Hybrid Search (Skeleton-Guided)...")
 
-        bm25_tool = BM25SearchTool(cache_dir=os.path.join(".cache", "bm25_index"))
-        bm25_tool.build_index(vector_tool.metadata, force_rebuild=args.rebuild_index)
-        bm25_results = bm25_tool.search(query_to_use, top_k=20)
+            emb_client = EmbeddingClient()
+            vector_tool = VectorSearchTool(
+                embedding_client=emb_client,
+                cache_dir=os.path.join(".cache", "vector_index")
+            )
+            vector_tool.build_index_with_symbols(search_path, symbol_index, force_rebuild=args.rebuild_index)
+            vector_results = vector_tool.search(query_to_use, top_k=20)
 
-        searcher = SearchTool()
-        queries = llm.generate_search_queries(
-            query_to_use, tool="ripgrep",
-            project_context=project_context,
-            file_structure=project_structure
-        )
-        # Add technical keywords to ripgrep search
-        if expansion_keywords:
-            queries = expansion_keywords[:3] + queries
+            bm25_tool = BM25SearchTool(cache_dir=os.path.join(".cache", "bm25_index"))
+            bm25_tool.build_index(vector_tool.metadata, force_rebuild=args.rebuild_index)
+            bm25_results = bm25_tool.search(query_to_use, top_k=20)
+
+            searcher = SearchTool()
+            queries = llm.generate_search_queries(
+                query_to_use, tool="ripgrep",
+                project_context=project_context,
+                file_structure=project_structure
+            )
+            # Add technical keywords to ripgrep search
+            if expansion_keywords:
+                queries = expansion_keywords[:3] + queries
+                
+            keyword_chunks = []
+            for q in queries[:5]:
+                keyword_chunks.extend(searcher.search_and_chunk(q, search_path))
+
+            print("   Applying Reciprocal Rank Fusion (RRF)...")
+            search_candidates = reciprocal_rank_fusion([vector_results, bm25_results, keyword_chunks])
+
+            # Step 7: Merge Targeted + Search, Deduplicate, Rerank
+            print("[Step 7/8] Merging + Reranking...")
+
+            # Targeted chunks - these are GOLD. Keep them all.
+            print(f"   [Orchestrator] Keeping {len(targeted_chunks)} targeted chunks.")
             
-        keyword_chunks = []
-        for q in queries[:5]:
-            keyword_chunks.extend(searcher.search_and_chunk(q, search_path))
-
-        print("   Applying Reciprocal Rank Fusion (RRF)...")
-        search_candidates = reciprocal_rank_fusion([vector_results, bm25_results, keyword_chunks])
-
-        # Step 7: Merge Targeted + Search, Deduplicate, Rerank
-        print("[Step 7/8] Merging + Reranking...")
-
-        # Targeted chunks - these are GOLD. Keep them all.
-        print(f"   [Orchestrator] Keeping {len(targeted_chunks)} targeted chunks.")
-        
-        # Rerank search candidates only
-        reranker = CrossEncoderReranker()
-        # Calculate how many search results we can fit
-        slots_remaining = 10 - len(targeted_chunks)
-        if slots_remaining < 3: slots_remaining = 3 
-        
-        reranked_search = reranker.rerank(query_to_use, search_candidates, top_k=slots_remaining)
-        
-        # Combine
-        top_chunks = list(targeted_chunks)
-        seen_paths = {c['file'] for c in targeted_chunks}
-        
-        for chunk in reranked_search:
-            if chunk['file'] not in seen_paths:
-                top_chunks.append(chunk)
-                seen_paths.add(chunk['file'])
+            # Rerank search candidates only
+            reranker = CrossEncoderReranker()
+            # Calculate how many search results we can fit
+            slots_remaining = 10 - len(targeted_chunks)
+            if slots_remaining < 3: slots_remaining = 3 
             
-        print(f"   Selected top {len(top_chunks)} chunks (Targeted: {len(targeted_chunks)}, Search: {len(top_chunks)-len(targeted_chunks)})")
+            reranked_search = reranker.rerank(query_to_use, search_candidates, top_k=slots_remaining)
+            
+            # Combine
+            top_chunks = list(targeted_chunks)
+            seen_paths = {c['file'] for c in targeted_chunks}
+            
+            for chunk in reranked_search:
+                if chunk['file'] not in seen_paths:
+                    top_chunks.append(chunk)
+                    seen_paths.add(chunk['file'])
+                
+            print(f"   Selected top {len(top_chunks)} chunks (Targeted: {len(targeted_chunks)}, Search: {len(top_chunks)-len(targeted_chunks)})")
 
-        # Expand context: for matched symbols, get their call graph info
-        graph_context_parts = []
-        seen_symbols = set()
-        for chunk in top_chunks:
-            symbol_name = chunk.get("symbol", "")
-            if symbol_name and symbol_name not in seen_symbols:
-                seen_symbols.add(symbol_name)
-                ctx = call_graph.get_context_for_function(symbol_name, depth=2)
-                if ctx and "No call graph data" not in ctx:
-                    graph_context_parts.append(ctx)
+            # Expand context: for matched symbols, get their call graph info
+            graph_context_parts = []
+            seen_symbols = set()
+            for chunk in top_chunks:
+                symbol_name = chunk.get("symbol", "")
+                if symbol_name and symbol_name not in seen_symbols:
+                    seen_symbols.add(symbol_name)
+                    ctx = call_graph.get_context_for_function(symbol_name, depth=2)
+                    if ctx and "No call graph data" not in ctx:
+                        graph_context_parts.append(ctx)
 
-        call_graph_context = "\n\n---\n\n".join(graph_context_parts) if graph_context_parts else ""
+            call_graph_context = "\n\n---\n\n".join(graph_context_parts) if graph_context_parts else ""
 
-        # Step 8: Code-Aware Answer Synthesis
-        print("[Step 8/8] Synthesizing Answer (with skeleton context)...")
+        # Step 8: Agentic Action Loop
+        print("[Step 8/8] Agentic Action Loop (Synthesizing/Editing)...")
         full_context = "\n\n---\n\n".join([c["content"] for c in top_chunks])
-        answer = llm.answer_code_question(
-            args.question,
-            full_context,
-            call_graph_context=call_graph_context,
-            project_structure=project_structure,
-            skeleton_context=skeleton_context,
-            history=history_context
-        )
+        
+        iteration = 0
+        max_iterations = 5
+        answer = None
+        
+        while iteration < max_iterations:
+            iteration += 1
+            print(f"   [Iteration {iteration}/{max_iterations}] Thinking...")
+            
+            # Use call_graph and skeleton as part of context for decide_action in github mode
+            combined_context = f"{skeleton_context}\n\n{call_graph_context}\n\n{full_context}"
+            
+            decision = llm.decide_action(
+                args.question, 
+                combined_context, 
+                project_structure=project_structure, 
+                history=history_context, 
+                available_tools=available_tools
+            )
+            
+            action_type = decision.get("action")
+            thought = decision.get("thought", "No thought provided.")
+            print(f"   Thought: {thought}")
+            
+            if action_type == "final_answer":
+                answer = decision.get("content", "No content provided.")
+                break
+            elif action_type == "tool_call":
+                tool = decision.get("tool")
+                method = decision.get("method")
+                kwargs = decision.get("args", {})
+                
+                print(f"   Action -> {tool}.{method}({kwargs})")
+                
+                observation = ""
+                if tool == "FileEditorTool":
+                    if method == "read_file":
+                        observation = file_editor.read_file(**kwargs)
+                    elif method == "write_file":
+                        observation = file_editor.write_file(**kwargs)
+                    elif method == "replace_in_file":
+                        observation = file_editor.replace_in_file(**kwargs)
+                    else:
+                        observation = f"[Error] Unknown method: {method}"
+                else:
+                    observation = f"[Error] Unknown tool: {tool}"
+                    
+                print(f"   Observation: {observation[:100]}...\n")
+                
+                # Append observation to context so the next iteration sees it
+                action_str = f"Action taken: {tool}.{method}({kwargs})\nObservation: {observation}"
+                full_context += f"\n\n--- ACTION LOG ---\n{action_str}"
+            else:
+                print(f"   [Warning] Unknown action type: {action_type}")
+                answer = "Error: Invalid agent action."
+                break
+                
+        if answer is None:
+            answer = "Error: Agent reached maximum iterations without giving a final answer."
 
     else:
         # ============================================================
         #  GENERAL PIPELINE (Local File System)
         # ============================================================
         print("\n[General Search Pipeline]")
-        print("[Step 1/4] Triple-Hybrid Search (Keyword + Semantic + Statistical)...")
+        refined_data = llm.refine_user_query(args.question, project_context=project_context, file_structure="[Local Search Tree Not Injected]")
+        is_action_request = refined_data.get("is_action_request", False)
+        
+        if is_action_request:
+            print(f"   [Fast-Path] Action command detected. Skipping search pipeline (Steps 1-2).")
+            top_chunks = []
+            project_structure = "[Local search tree not injected by default]"
+        else:
+            print("[Step 1/4] Triple-Hybrid Search (Keyword + Semantic + Statistical)...")
 
-        emb_client = EmbeddingClient()
-        vector_tool = VectorSearchTool(
-            embedding_client=emb_client,
-            cache_dir=os.path.join(".cache", "vector_index")
-        )
-        vector_tool.build_index(search_path, force_rebuild=args.rebuild_index)
-        vector_results = vector_tool.search(args.question, top_k=20)
+            # (Local File system skips building the file structure string right now, but we can provide a small one)
+            project_structure = "[Local search tree not injected by default]"
+            
+            emb_client = EmbeddingClient()
+            vector_tool = VectorSearchTool(
+                embedding_client=emb_client,
+                cache_dir=os.path.join(".cache", "vector_index")
+            )
+            vector_tool.build_index(search_path, force_rebuild=args.rebuild_index)
+            vector_results = vector_tool.search(args.question, top_k=20)
 
-        bm25_tool = BM25SearchTool(cache_dir=os.path.join(".cache", "bm25_index"))
-        bm25_tool.build_index(vector_tool.metadata, force_rebuild=args.rebuild_index)
-        bm25_results = bm25_tool.search(args.question, top_k=20)
+            bm25_tool = BM25SearchTool(cache_dir=os.path.join(".cache", "bm25_index"))
+            bm25_tool.build_index(vector_tool.metadata, force_rebuild=args.rebuild_index)
+            bm25_results = bm25_tool.search(args.question, top_k=20)
 
-        searcher = SearchTool()
-        queries = llm.generate_search_queries(args.question, tool="ripgrep", project_context=project_context)
-        keyword_chunks = []
-        for q in queries[:3]:
-            keyword_chunks.extend(searcher.search_and_chunk(q, search_path))
+            searcher = SearchTool()
+            queries = llm.generate_search_queries(args.question, tool="ripgrep", project_context=project_context)
+            keyword_chunks = []
+            for q in queries[:3]:
+                keyword_chunks.extend(searcher.search_and_chunk(q, search_path))
 
-        print("   Applying Reciprocal Rank Fusion (RRF)...")
-        deduped_candidates = reciprocal_rank_fusion([vector_results, bm25_results, keyword_chunks])
-        print(f"   Collected {len(deduped_candidates)} unique candidate chunks.")
+            print("   Applying Reciprocal Rank Fusion (RRF)...")
+            deduped_candidates = reciprocal_rank_fusion([vector_results, bm25_results, keyword_chunks])
+            print(f"   Collected {len(deduped_candidates)} unique candidate chunks.")
 
-        print("[Step 2/4] Reranking Chunks (Local BERT Cross-Encoder)...")
-        reranker = CrossEncoderReranker()
-        top_chunks = reranker.rerank(args.question, deduped_candidates, top_k=5)
-        print(f"   Selected top {len(top_chunks)} chunks.")
+            print("[Step 2/4] Reranking Chunks (Local BERT Cross-Encoder)...")
+            reranker = CrossEncoderReranker()
+            top_chunks = reranker.rerank(args.question, deduped_candidates, top_k=5)
+            print(f"   Selected top {len(top_chunks)} chunks.")
 
-        print("[Step 3/4] Synthesizing Answer...")
+        print("[Step 3/4] Agentic Action Loop (Synthesizing/Editing)...")
         full_context = "\n\n---\n\n".join([c["content"] for c in top_chunks])
-        answer = llm.answer_question(args.question, full_context, history=history_context)
+        
+        iteration = 0
+        max_iterations = 5
+        answer = None
+        
+        while iteration < max_iterations:
+            iteration += 1
+            print(f"   [Iteration {iteration}/{max_iterations}] Thinking...")
+            
+            decision = llm.decide_action(
+                args.question, 
+                full_context, 
+                project_structure=project_structure, 
+                history=history_context, 
+                available_tools=available_tools
+            )
+            
+            action_type = decision.get("action")
+            thought = decision.get("thought", "No thought provided.")
+            print(f"   Thought: {thought}")
+            
+            if action_type == "final_answer":
+                answer = decision.get("content", "No content provided.")
+                break
+            elif action_type == "tool_call":
+                tool = decision.get("tool")
+                method = decision.get("method")
+                kwargs = decision.get("args", {})
+                
+                print(f"   Action -> {tool}.{method}({kwargs})")
+                
+                observation = ""
+                if tool == "FileEditorTool":
+                    if method == "read_file":
+                        observation = file_editor.read_file(**kwargs)
+                    elif method == "write_file":
+                        observation = file_editor.write_file(**kwargs)
+                    elif method == "replace_in_file":
+                        observation = file_editor.replace_in_file(**kwargs)
+                    else:
+                        observation = f"[Error] Unknown method: {method}"
+                else:
+                    observation = f"[Error] Unknown tool: {tool}"
+                    
+                print(f"   Observation: {observation[:100]}...\n")
+                
+                action_str = f"Action taken: {tool}.{method}({kwargs})\nObservation: {observation}"
+                full_context += f"\n\n--- ACTION LOG ---\n{action_str}"
+            else:
+                print(f"   [Warning] Unknown action type: {action_type}")
+                answer = "Error: Invalid agent action."
+                break
+                
+        if answer is None:
+            answer = "Error: Agent reached maximum iterations without giving a final answer."
 
     # --- Verification (shared by both pipelines) ---
     verification_summary = ""

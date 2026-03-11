@@ -12,7 +12,8 @@ from src.prompts import (
     answer_code_question_prompt,
     analyze_project_context_prompt,
     generate_questions_prompt,
-    github_search_query_prompt
+    github_search_query_prompt,
+    decide_action_prompt
 )
 
 class LLMClient:
@@ -30,13 +31,14 @@ class LLMClient:
     def refine_user_query(self, user_question: str, project_context: str = "", file_structure: str = "") -> Dict:
         """
         Refines a vague user query into a technical information need.
-        Returns a dict with 'intent', 'refined_question', and 'keywords'.
+        Returns a dict with 'intent', 'refined_question', 'keywords', and 'is_action_request'.
         """
         if self.provider == "mock":
             return {
                 "intent": "Search for code related to the question.",
                 "refined_question": user_question,
-                "keywords": user_question.split()
+                "keywords": user_question.split(),
+                "is_action_request": False
             }
 
         prompt = refine_query_prompt(user_question, project_context, file_structure)
@@ -58,7 +60,11 @@ class LLMClient:
                 if start_idx != -1 and end_idx != -1:
                     json_str = content[start_idx:end_idx+1]
                     try:
-                        return json.loads(json_str)
+                        data = json.loads(json_str)
+                        # Ensure the key exists even if the LLM misses it
+                        if "is_action_request" not in data:
+                            data["is_action_request"] = False
+                        return data
                     except json.JSONDecodeError:
                         pass # Fall through to default
                         
@@ -68,7 +74,8 @@ class LLMClient:
         return {
             "intent": "General code search",
             "refined_question": user_question,
-            "keywords": []
+            "keywords": [],
+            "is_action_request": False
         }
 
     def identify_relevant_files(self, user_question: str, file_structure: str, symbol_minimap: Dict = None) -> List[str]:
@@ -255,6 +262,45 @@ The following files were identified as most relevant to this question. Pay speci
 
         return "Error: LLM provider not configured or unavailable."
 
+    def decide_action(self, user_question: str, context: str, project_structure: str = "", history: List[Dict] = None, available_tools: str = "") -> Dict:
+        """
+        Determines the next action in an agentic loop (either a tool call or a final answer).
+        """
+        if self.provider == "mock":
+            return {"action": "final_answer", "content": "[Mock Final Answer from Action Loop]"}
+
+        history_str = ""
+        if history:
+            history_str = "Conversation History:\n"
+            for msg in history:
+                history_str += f"{msg['role'].capitalize()}: {msg['content']}\n"
+
+        prompt = decide_action_prompt(user_question, context, history_str, project_structure, available_tools)
+
+        if self.provider == "openai" and self.client:
+            try:
+                response = self.client.chat.completions.create(
+                    model="gpt-4o", # Using full gpt-4o for tool reasoning
+                    messages=[{"role": "system", "content": "You are an autonomous AI. Return ONLY a valid JSON object."},
+                              {"role": "user", "content": prompt}]
+                )
+                
+                content = response.choices[0].message.content.strip()
+                # Robust JSON extraction
+                start_idx = content.find('{')
+                end_idx = content.rfind('}')
+                
+                if start_idx != -1 and end_idx != -1:
+                    json_str = content[start_idx:end_idx+1]
+                    return json.loads(json_str)
+                else:
+                    return {"action": "final_answer", "content": content}
+                    
+            except Exception as e:
+                print(f"[Action Loop] Error: {e}")
+                return {"action": "final_answer", "content": f"Encountered error in loop: {e}"}
+
+        return {"action": "final_answer", "content": "LLM Provider not configured."}
 
     def analyze_project_context(self, readme_content: str) -> str:
         """
