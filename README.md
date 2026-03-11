@@ -1,21 +1,21 @@
 # gitSurf
 
-An AI-powered CLI tool that performs context-aware, semantic code search over any GitHub repository. It treats code search as a reasoning problem, not just a keyword matching problem.
+An AI-powered Agentic CLI tool that performs context-aware, semantic code search and **autonomous file editing** over any local or remote GitHub repository. It treats code interaction as a reasoning problem, navigating your codebase to find answers or execute commands.
 
 ## Why This Exists?
-Standard RAG (Retrieval Augmented Generation) often fails on code because it misses abstract relationships and specific variable names. This tool uses a **Triple-Hybrid Search** (Semantic + Keyword + Regex) combined with an **8-Step Reasoning Pipeline** to find the exact lines of code you need, even in massive or unfamiliar codebases.
+Standard RAG (Retrieval Augmented Generation) often fails on code because it misses abstract relationships and specific variable names. This tool uses a **Triple-Hybrid Search** (Semantic + Keyword + Regex) combined with an **Agentic Action Loop** to find the exact lines of code you need, and can safely modify files on your behalf.
 
-## Features (v1.1)
+## Features (v2.0)
 
--   **8-Step Reasoning Pipeline**: From Skeleton Analysis to MiniMap-guided retrieval to final answer synthesis.
--   **Symbol MiniMap**: Automatically extracts and tracks function signatures, classes, and exported symbols to catch abstract names.
+-   **Agentic Action Loop (ReAct)**: The AI reasons about context and can autonomously use tools to read, edit, or create files to fulfill your request.
+-   **Fast-Path Action Routing**: Directly executes simple commands (e.g., "Create a file") without running the heavyweight search pipeline.
 -   **Triple-Hybrid Search**: Runs 3 search engines in parallel:
     -   **Vector (FAISS)**: For conceptual understanding ("auth logic").
     -   **BM25 (Statistical)**: For keyword relevance.
     -   **Ripgrep (Regex)**: For exact string/pattern matching.
+-   **Symbol MiniMap**: Automatically extracts and tracks function signatures, classes, and exported symbols to catch abstract names.
 -   **Query Expansion**: Translates vague questions ("how is data saved?") into technical intent ("persistence layer implementation").
--   **Smart Reranking**: content-aware cross-encoder validates every chunk before the LLM sees it.
--   **Markdown Caching**: Flattens repo structure into optimized Markdown for fast, token-efficient analysis.
+-   **Smart Reranking**: A context-aware cross-encoder validates every chunk before the LLM sees it.
 
 ## Setup
 
@@ -74,31 +74,31 @@ python main.py "query" --github-repo owner/repo --skip-verify
 # Clear all cache
 python main.py --clear-cache
 
-# Reset conversation history
+# reset conversation history (clearing agent memory)
 python main.py --reset
-
-# Use legacy git clone (instead of markdown cache)
-python main.py "query" --github-repo owner/repo --clone
 ```
 
 ## Architecture
 
-The system follows an **8-Step Pipeline**:
-1.  **Load Skeleton & MiniMap**: Context loading.
-2.  **Query Expansion**: Intent classification.
-3.  **Skeleton Analysis**: Identifying key files.
-4.  **Targeted Retrieval**: Fetching full file content.
-5.  **Symbol Extraction**: Building call graphs.
-6.  **Hybrid Search**: FAISS + BM25 + Ripgrep.
-7.  **Merge & Rerank**: Cross-Encoder validation.
-8.  **Synthesis**: Final answer generation.
+The system follows a modular architecture managed by `src/orchestrator.py`:
+1.  **Fast-Path Evaluation**: Checks if the user is asking a direct command (skips to Step 8) or a search question.
+2.  **Load Skeleton & MiniMap**: Context loading.
+3.  **Query Expansion**: Intent classification.
+4.  **Skeleton Analysis**: Identifying key files.
+5.  **Targeted Retrieval**: Fetching full file content.
+6.  **Symbol Extraction**: Building call graphs.
+7.  **Hybrid Search**: FAISS + BM25 + Ripgrep.
+8.  **Merge & Rerank**: Cross-Encoder validation.
+9.  **Agentic Action Loop (ReAct)**: LLM decides to answer directly or use tools (like `FileEditorTool`) to modify the codebase.
 
 See [**ARCHITECTURE.md**](ARCHITECTURE.md) for a deep dive.
 
 ## Project Structure
--   `main.py`: CLI Orchestrator.
+-   `main.py`: Thin CLI Entrypoint.
+-   `src/orchestrator.py`: Pipeline coordinator and Agentic Action loop.
 -   `src/llm_client.py`: Intelligence layer (uses `src/prompts.py`).
 -   `src/tools/`:
+    -   `file_editor_tool.py`: Allows the agent to read/write files.
     -   `markdown_repo_manager.py`: GitHub sync & MiniMap builder.
     -   `vector_search_tool.py`: FAISS implementation.
     -   `symbol_extractor.py`: Static analysis.

@@ -6,13 +6,17 @@ This document outlines the high-level architecture and processing pipeline of th
 
 The tool follows a **Modular Pipeline Architecture**, separating context acquisition, search execution, and answer synthesis.
 
-```mermaid
+  ```mermaid
 graph TD
-    User([User Question]) --> Main[main.py: Orchestrator]
+    User([User Request]) --> Main[main.py: CLI]
+    Main --> Orch[src/orchestrator.py]
+    
+    Orch -- "Fast-Path (Action)" --> ActionLoop
+    Orch -- "Search Request" --> Phase1
     
     subgraph "Phase 1: Context & Intelligence"
-        Main --> Skeleton[LLM: Skeleton Analysis]
-        Main --> QM[LLM: Query Manager]
+        Phase1[Project Skeleton] --> QM[LLM: Query Refinement]
+        QM --> Skeleton[LLM: Identify Key Files]
     end
     
     subgraph "Phase 2: Hybrid Retrieval"
@@ -22,41 +26,47 @@ graph TD
         QM --> RG[Grep Search: Keywords]
     end
     
-    subgraph "Phase 3: Processing & Synthesis"
+    subgraph "Phase 3: Processing & Action"
         TR & VS & BM25 & RG --> Merge[Deduplication & Reranking]
         Merge --> RE[Cross-Encoder Reranker]
-        RE --> Synthesis[LLM: Code-Aware Synthesis]
+        RE --> ActionLoop[Agentic Action Loop: ReAct]
     end
     
-    Synthesis --> Output([Final Answer])
+    ActionLoop -- "FileEditorTool" --> FileSys[(Local Files)]
+    ActionLoop --> Output([Final Answer / Result])
 ```
 
 ---
 
 ## Core Components
 
-### 1. The Orchestrator (`main.py`)
-The primary entry point that manages the lifecycle of a search request.
-### 3. Search Workflow (8-Step Pipeline)
+### 1. The Entrypoint (`main.py`)
+A thin CLI wrapper that parses arguments and initializes the agents.
 
+### 2. The Pipeline (`src/orchestrator.py`)
+Handles the routing and heavy lifting. 
+-   **Fast-Path Routing**: If the user's intent is identified as a direct command (e.g., "Create a file"), the orchestrator skips the entire search retrieval phase and passes execution straight to the Action Agent.
+
+### 3. Search Workflow (For informational queries)
 1.  **Project Skeleton & MiniMap Loading**: Load file tree + `symbol_minimap.json` (signatures, docstrings, keywords).
-2.  **Query Expansion**: LLM refines user question into "Technical Intent" + keywords (e.g. "auth" -> "JWT validation").
+2.  **Query Expansion**: LLM refines user question into "Technical Intent", checks if it's an action command, and outputs keywords.
 3.  **Skeleton Analysis**: LLM identifies 3-8 key files using the MiniMap and file tree.
 4.  **Targeted Retrieval**: Full content of identified files is read immediately.
 5.  **Symbol & Call Graph Analysis**: Extract symbols and relationships from targeted files.
 6.  **Triple-Hybrid Search**: Parallel Vector + BM25 + Ripgrep (regex) search for broader context.
 7.  **Merge & Rerank**: Combine targeted files + search results, rerank using Cross-Encoder.
-8.  **Answer Synthesis**: LLM generates answer using the curated context.
+8.  **Agentic Action Loop**: The ReAct agent takes the curated context and decides whether to write a final answer or execute tools to modify files.
 
 ### 4. Key Components
 
--   **`LLMClient`**: Handles all LLM interactions (now using `src/prompts.py`).
+-   **`src/orchestrator.py`**: Coordinates the search pipelines and the shared execution loop.
+-   **`LLMClient`**: Handles all LLM interactions and intention parsing (`src/prompts.py`).
+-   **`FileEditorTool`**: Gives the autonomous agent read/write/edit access to the filesystem.
 -   **`MarkdownRepoManager`**: Syncs GitHub repos to `.cache`, builds `symbol_minimap.json`.
--   **`TargetedRetriever`**: surgically reads files identified by Skeleton Analysis.
--   **`SymbolExtractor` / `CallGraph`**: Static analysis for Python/JS.
+-   **`TargetedRetriever`**: Surgically reads files identified by Skeleton Analysis.
+-   **`SymbolExtractor` / `CallGraph`**: Static analysis for Python/JS dependencies.
 -   **`VectorSearchTool` / `BM25SearchTool`**: Semantic & Keyword search.
 -   **`SearchTool` (Ripgrep)**: Regex pattern matching with technical keywords.
-- **Synthesize Answers**: Combines retrieved code snippets, call graphs, and file structure to produce high-fidelity answers.
 
 ### 3. The Search Engine
 The tool uses a **Triple-Hybrid Search** strategy to maximize recall:
