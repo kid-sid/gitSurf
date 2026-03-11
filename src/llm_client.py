@@ -8,8 +8,6 @@ from src.prompts import (
     refine_query_prompt,
     identify_relevant_files_prompt,
     generate_search_queries_prompt,
-    answer_question_prompt,
-    answer_code_question_prompt,
     analyze_project_context_prompt,
     generate_questions_prompt,
     github_search_query_prompt,
@@ -179,88 +177,6 @@ Use this structure to generate targeted queries. For example, if you see 'servic
             return [line.strip() for line in content.splitlines() if line.strip()]
 
         return []
-
-    def answer_question(self, user_question: str, context: str, history: List[Dict] = None) -> str:
-        if self.provider == "mock":
-            return f"Based on the search results, here is the answer to '{user_question}':\n\n[Mock Answer]"
-
-        history_str = ""
-        if history:
-            history_str = "Conversation History:\n"
-            for msg in history:
-                history_str += f"{msg['role'].capitalize()}: {msg['content']}\n"
-            history_str += "\n"
-
-        prompt = answer_question_prompt(user_question, context, history_str)
-
-        if self.provider == "openai" and self.client:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "system", "content": "You are a helpful assistant."},
-                          {"role": "user", "content": prompt}]
-            )
-            return response.choices[0].message.content
-
-        return "Error: LLM provider not configured or unavailable."
-
-    def answer_code_question(self, user_question: str, context: str,
-                              call_graph_context: str = "",
-                              project_structure: str = "",
-                              skeleton_context: str = "",
-                              history: List[Dict] = None) -> str:
-        """
-        Code-aware answer synthesis with call graph and structure context.
-        Designed for GitHub repo search where function relationships matter.
-        Now includes skeleton_context listing which files were specifically targeted.
-        """
-        if self.provider == "mock":
-            return f"[Code-Aware Mock Answer for '{user_question}']"
-
-        history_str = ""
-        if history:
-            history_str = "Conversation History:\n"
-            for msg in history:
-                history_str += f"{msg['role'].capitalize()}: {msg['content']}\n"
-            history_str += "\n"
-
-        structure_section = ""
-        if project_structure:
-            structure_section = f"""
-Project Structure:
-```
-{project_structure[:5000]}
-```
-"""
-
-        graph_section = ""
-        if call_graph_context:
-            graph_section = f"""
-Call Graph Analysis:
-{call_graph_context}
-"""
-
-        skeleton_section = ""
-        if skeleton_context:
-            skeleton_section = f"""
-Targeted Files Analysis:
-The following files were identified as most relevant to this question. Pay special attention to code from these files:
-{skeleton_context}
-"""
-
-        prompt = answer_code_question_prompt(
-            user_question, context, history_str,
-            structure_section, skeleton_section, graph_section
-        )
-
-        if self.provider == "openai" and self.client:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "system", "content": "You are an expert code analyst with deep understanding of software architecture and function dependencies."},
-                          {"role": "user", "content": prompt}]
-            )
-            return response.choices[0].message.content
-
-        return "Error: LLM provider not configured or unavailable."
 
     def decide_action(self, user_question: str, context: str, project_structure: str = "", history: List[Dict] = None, available_tools: str = "") -> Dict:
         """
