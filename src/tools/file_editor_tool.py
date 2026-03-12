@@ -69,6 +69,18 @@ class FileEditorTool:
         except Exception as e:
             return f"[Error] Failed to replace in file: {e}"
 
+    def delete_file(self, rel_path: str) -> str:
+        """Deletes a file from the file system."""
+        try:
+            abs_path = self._get_abs_path(rel_path)
+            if not os.path.exists(abs_path):
+                return f"[Error] File not found: {rel_path}"
+                
+            os.remove(abs_path)
+            return f"[Success] Deleted file: {rel_path}"
+        except Exception as e:
+            return f"[Error] Failed to delete file: {e}"
+
 if __name__ == "__main__":
     # Simple internal test
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

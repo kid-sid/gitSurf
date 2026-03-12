@@ -18,7 +18,7 @@ from src.verifier import AnswerVerifier
 from src.tools.file_editor_tool import FileEditorTool
 from src.tools.repo_manager import RepoManager
 from src.tools.markdown_repo_manager import MarkdownRepoManager
-from src.orchestrator import run_code_aware_pipeline, run_local_pipeline
+from src.orchestrator import run_code_aware_pipeline, run_local_pipeline, PipelineContext
 
 # Force UTF-8 for stdout/stderr on Windows
 if sys.platform == "win32":
@@ -28,11 +28,12 @@ if sys.platform == "win32":
 
 AVAILABLE_TOOLS = """
 Tool: FileEditorTool
-Description: Read, write, or modify files inside the project directory.
+Description: Read, write, modify, or delete files inside the project directory.
 Methods:
   - read_file(rel_path, start_line=None, end_line=None)
   - write_file(rel_path, content)
   - replace_in_file(rel_path, target, replacement)
+  - delete_file(rel_path)
 """
 
 
@@ -48,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rebuild-index", action="store_true", help="Force-rebuild FAISS index.")
     parser.add_argument("--skip-verify", action="store_true", help="Skip answer verification.")
     parser.add_argument("--clear-cache", action="store_true", help="Delete all cached data.")
+    parser.add_argument("-i", "--interactive", action="store_true", help="Start interactive CLI REPL.")
     return parser
 
 
@@ -63,7 +65,7 @@ def main():
             print(f"[Cache] Cleared: {cache_dir}")
         else:
             print("[Cache] No cache directory found.")
-        if not args.question:
+        if not args.question and not args.interactive:
             return
 
     # ── Core components ───────────────────────────────────────────────
@@ -73,15 +75,15 @@ def main():
     if args.reset:
         history_mgr.clear_history()
         print("Conversation history reset.")
-        if not args.question:
+        if not args.question and not args.interactive:
             return
 
-    if not args.question:
+    is_interactive = args.interactive or (not args.question and not args.suggest)
+
+    if not is_interactive and not args.question and not args.suggest:
         parser.print_help()
         return
 
-    print(f"Analyzing question: '{args.question}'...")
-    history_context = history_mgr.get_recent_context()
     search_path = args.path
     project_context = ""
 
@@ -131,52 +133,81 @@ def main():
 
     # ── Agent Tools ───────────────────────────────────────────────────
     file_editor = FileEditorTool(root_path=search_path)
+    is_code_search = args.github_repo is not None
+    pipeline_ctx = PipelineContext(search_path=search_path, rebuild_index=args.rebuild_index)
+
+    def process_query(current_question: str):
+        print(f"\nAnalyzing question: '{current_question}'...")
+        history_context = history_mgr.get_recent_context()
+
+        if is_code_search:
+            answer, full_context = run_code_aware_pipeline(
+                question=current_question,
+                search_path=search_path,
+                llm=llm,
+                project_context=project_context,
+                available_tools=AVAILABLE_TOOLS,
+                file_editor=file_editor,
+                history=history_context,
+                rebuild_index=args.rebuild_index,
+                ctx=pipeline_ctx,
+            )
+        else:
+            answer, full_context = run_local_pipeline(
+                question=current_question,
+                search_path=search_path,
+                llm=llm,
+                project_context=project_context,
+                available_tools=AVAILABLE_TOOLS,
+                file_editor=file_editor,
+                history=history_context,
+                rebuild_index=args.rebuild_index,
+                ctx=pipeline_ctx,
+            )
+
+        # ── Verification (shared) ─────────────────────────────────────────
+        verification_summary = ""
+        if not args.skip_verify and llm.client:
+            step_label = "[Step 8/8]" if is_code_search else "[Step 6/6]"
+            print(f"{step_label} Verifying Answer...")
+            verifier = AnswerVerifier(client=llm.client)
+            v_result = verifier.verify(current_question, answer, full_context)
+            verdict = v_result.get("verdict", "UNKNOWN")
+            reasoning = v_result.get("reasoning", "")
+            verification_summary = f"\n[Verification Verdict: {verdict}]\nReasoning: {reasoning}"
+            if v_result.get("suggested_correction"):
+                verification_summary += f"\nNote: {v_result['suggested_correction']}"
+        elif not args.skip_verify and not llm.client:
+            verification_summary = "\n[Verification skipped: No API key configured]"
+
+        print("\n=== FINAL ANSWER ===\n")
+        print(answer)
+        if verification_summary:
+            print(verification_summary)
+
+        history_mgr.add_interaction(current_question, answer)
 
     # ── Run Pipeline ──────────────────────────────────────────────────
-    is_code_search = args.github_repo is not None
-
-    if is_code_search:
-        answer, full_context = run_code_aware_pipeline(
-            question=args.question,
-            search_path=search_path,
-            llm=llm,
-            project_context=project_context,
-            available_tools=AVAILABLE_TOOLS,
-            file_editor=file_editor,
-            history=history_context,
-            rebuild_index=args.rebuild_index,
-        )
+    if is_interactive:
+        print("\n=== GitSurf Interactive Mode ===")
+        print("Type 'exit', 'quit', or press Ctrl+C to quit.\n")
+        if args.question:
+            process_query(args.question)
+        while True:
+            try:
+                user_input = input("gitSurf> ").strip()
+                if not user_input:
+                    continue
+                if user_input.lower() in ("exit", "quit"):
+                    print("Exiting interactive mode.")
+                    break
+                process_query(user_input)
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting interactive mode.")
+                break
     else:
-        answer, full_context = run_local_pipeline(
-            question=args.question,
-            search_path=search_path,
-            llm=llm,
-            project_context=project_context,
-            available_tools=AVAILABLE_TOOLS,
-            file_editor=file_editor,
-            history=history_context,
-            rebuild_index=args.rebuild_index,
-        )
-
-    # ── Verification (shared) ─────────────────────────────────────────
-    verification_summary = ""
-    if not args.skip_verify:
-        step_label = "[Step 8/8]" if is_code_search else "[Step 4/4]"
-        print(f"{step_label} Verifying Answer...")
-        verifier = AnswerVerifier(client=llm.client)
-        v_result = verifier.verify(args.question, answer, full_context)
-        verdict = v_result.get("verdict", "UNKNOWN")
-        reasoning = v_result.get("reasoning", "")
-        verification_summary = f"\n[Verification Verdict: {verdict}]\nReasoning: {reasoning}"
-        if v_result.get("suggested_correction"):
-            verification_summary += f"\nNote: {v_result['suggested_correction']}"
-
-    print("\n=== FINAL ANSWER ===\n")
-    print(answer)
-    if verification_summary:
-        print(verification_summary)
-
-    history_mgr.add_interaction(args.question, answer)
+        if args.question:
+            process_query(args.question)
 
 
 if __name__ == "__main__":

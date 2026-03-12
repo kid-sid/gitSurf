@@ -3,6 +3,9 @@ import os
 import contextlib
 from sentence_transformers import CrossEncoder
 
+# Global cache for the Cross-Encoder model so it's only loaded once per session
+_MODEL_CACHE: Dict[str, CrossEncoder] = {}
+
 class CrossEncoderReranker:
     """Reranks candidate search results using a local BERT-based cross-encoder.
     Provides a more accurate relevance score than raw vector similarity
@@ -14,6 +17,12 @@ class CrossEncoderReranker:
             model_name: The name of the cross-encoder model to use.
             Default is ms-marco-MiniLM-L-6-v2 (fast and effective)."""
 
+        global _MODEL_CACHE
+
+        if model_name in _MODEL_CACHE:
+            self.model = _MODEL_CACHE[model_name]
+            return
+
         print(f"   [Reranker] Loading local model: {model_name}...")
         try:
             # Suppress tqdm and other loading logs
@@ -23,6 +32,7 @@ class CrossEncoderReranker:
             with open(os.devnull, 'w') as devnull:
                 with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
                     self.model = CrossEncoder(model_name)
+                    _MODEL_CACHE[model_name] = self.model
         except Exception as e:
             print(f"   [Reranker] Warning: Failed to load local model '{model_name}': {e}")
             print("              Reranking will be skipped.")

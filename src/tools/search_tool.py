@@ -37,8 +37,9 @@ class SearchTool:
                 data = json.loads(line)
                 if data["type"] == "match":
                     match_data = data["data"]
+                    file_path = match_data["path"]["text"].replace("\\", "/")
                     parsed_results.append({
-                        "file": match_data["path"]["text"],
+                        "file": file_path,
                         "line_number": match_data["line_number"],
                         "content": match_data["lines"]["text"].strip()
                     })
@@ -81,7 +82,8 @@ class SearchTool:
                         "start_line": start_line,
                         "end_line": actual_end,
                         "content": f"File: {file_path} (lines {start_line}-{actual_end})\n\n{content}",
-                        "source": "keyword"
+                        "source": "keyword",
+                        "symbol": "",
                     })
             except Exception:
                 continue
