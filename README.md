@@ -45,19 +45,27 @@ Standard RAG (Retrieval Augmented Generation) often fails on code because it mis
 
 ## Usage
 
-### 1. GitHub Context-Aware Search (Primary Mode)
+### 1. Interactive CLI Mode (Recommended)
+Start a continuous chat session to ask multiple questions or issue commands without re-initializing.
+```bash
+python main.py
+# or explicitly with the flag:
+python main.py --interactive
+```
+
+### 2. GitHub Context-Aware Search
 Analyzes a remote GitHub repo without cloning the full history.
 ```bash
 python main.py "How is the JWT validation implemented?" --github-repo owner/repo
 ```
 
-### 2. Local Search
+### 3. Local Search
 Run against a local directory.
 ```bash
 python main.py "Where is the main entry point?" --path .
 ```
 
-### 3. Generate Questions
+### 4. Generate Questions
 Auto-generate technical questions to help you explore a new codebase.
 ```bash
 python main.py --github-repo owner/repo --suggest
