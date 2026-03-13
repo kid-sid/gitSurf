@@ -16,6 +16,8 @@ from src.llm_client import LLMClient
 from src.history_manager import HistoryManager
 from src.verifier import AnswerVerifier
 from src.tools.file_editor_tool import FileEditorTool
+from src.tools.search_tool import SearchTool
+from src.tools.web_tool import WebSearchTool
 from src.tools.repo_manager import RepoManager
 from src.tools.markdown_repo_manager import MarkdownRepoManager
 from src.orchestrator import run_code_aware_pipeline, run_local_pipeline, PipelineContext
@@ -34,6 +36,18 @@ Methods:
   - write_file(rel_path, content)
   - replace_in_file(rel_path, target, replacement)
   - delete_file(rel_path)
+
+Tool: SearchTool
+Description: Search for text patterns in the codebase using ripgrep.
+Methods:
+  - search(query, search_path=".")
+  - search_and_chunk(query, search_path=".", context_lines=10)
+
+Tool: WebSearchTool
+Description: Search the web or fetch URL content for documentation/errors.
+Methods:
+  - search(query, num_results=5)
+  - fetch_url(url)
 """
 
 
@@ -57,7 +71,7 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    # ── Cache clearing ────────────────────────────────────────────────
+    # Cache clearing
     if args.clear_cache:
         cache_dir = os.path.abspath(".cache")
         if os.path.exists(cache_dir):
@@ -68,7 +82,7 @@ def main():
         if not args.question and not args.interactive:
             return
 
-    # ── Core components ───────────────────────────────────────────────
+    # Core components
     llm = LLMClient(provider=args.provider)
     history_mgr = HistoryManager()
 
@@ -87,7 +101,7 @@ def main():
     search_path = args.path
     project_context = ""
 
-    # ── GitHub Repo Setup ─────────────────────────────────────────────
+    # GitHub Repo Setup
     if args.github_repo:
         if args.clone:
             print(f"Mode: GitHub Search ({args.github_repo}) - Git Clone")
@@ -131,10 +145,19 @@ def main():
                     project_context = llm.analyze_project_context(readme_content)
                 search_path = repo_mgr.sync_repo(args.github_repo)
 
-    # ── Agent Tools ───────────────────────────────────────────────────
+    # Agent Tools
     file_editor = FileEditorTool(root_path=search_path)
+    searcher = SearchTool()
+    web_tool = WebSearchTool()
     is_code_search = args.github_repo is not None
     pipeline_ctx = PipelineContext(search_path=search_path, rebuild_index=args.rebuild_index)
+
+    # Tool registry: maps tool names to instances for the PRAR action loop
+    agent_tools = {
+        "FileEditorTool": file_editor,
+        "SearchTool": searcher,
+        "WebSearchTool": web_tool,
+    }
 
     def process_query(current_question: str):
         print(f"\nAnalyzing question: '{current_question}'...")
@@ -147,7 +170,7 @@ def main():
                 llm=llm,
                 project_context=project_context,
                 available_tools=AVAILABLE_TOOLS,
-                file_editor=file_editor,
+                tools=agent_tools,
                 history=history_context,
                 rebuild_index=args.rebuild_index,
                 ctx=pipeline_ctx,
@@ -159,13 +182,13 @@ def main():
                 llm=llm,
                 project_context=project_context,
                 available_tools=AVAILABLE_TOOLS,
-                file_editor=file_editor,
+                tools=agent_tools,
                 history=history_context,
                 rebuild_index=args.rebuild_index,
                 ctx=pipeline_ctx,
             )
 
-        # ── Verification (shared) ─────────────────────────────────────────
+        # Verification (shared)
         verification_summary = ""
         if not args.skip_verify and llm.client:
             step_label = "[Step 8/8]" if is_code_search else "[Step 6/6]"
@@ -187,7 +210,7 @@ def main():
 
         history_mgr.add_interaction(current_question, answer)
 
-    # ── Run Pipeline ──────────────────────────────────────────────────
+    # Run Pipeline
     if is_interactive:
         print("\n=== GitSurf Interactive Mode ===")
         print("Type 'exit', 'quit', or press Ctrl+C to quit.\n")

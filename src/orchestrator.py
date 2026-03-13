@@ -121,7 +121,7 @@ def execute_action_loop(
     question: str,
     initial_context: str,
     llm,
-    file_editor: FileEditorTool,
+    tools: Dict,
     available_tools: str,
     project_structure: str = "",
     extra_context_prefix: str = "",
@@ -129,8 +129,11 @@ def execute_action_loop(
     max_iterations: int = 5,
 ) -> str:
     """
-    Shared ReAct loop. Lets the LLM choose between tool calls and a final answer.
-    Returns the final answer string.
+    PRAR (Perceive-Reason-Act-Reflect) agent loop.
+
+    Args:
+        tools: Dict mapping tool names to instances, e.g.
+               {"FileEditorTool": file_editor, "SearchTool": searcher, ...}
     """
     full_context = initial_context
     answer = None
@@ -141,6 +144,7 @@ def execute_action_loop(
         context_for_llm = (f"{extra_context_prefix}\n\n{full_context}".strip()
                            if extra_context_prefix else full_context)
 
+        # ── Reason: LLM decides next action via CoT ──
         decision = llm.decide_action(
             question,
             context_for_llm,
@@ -158,23 +162,36 @@ def execute_action_loop(
             break
 
         elif action_type == "tool_call":
-            tool = decision.get("tool")
+            tool_name = decision.get("tool")
             method = decision.get("method")
             kwargs = decision.get("args", {})
-            print(f"   Action -> {tool}.{method}({kwargs})")
+            print(f"   Action -> {tool_name}.{method}({kwargs})")
 
-            if tool == "FileEditorTool":
-                fn = getattr(file_editor, method, None)
+            # ── Act: Generic tool dispatch ──
+            tool_instance = tools.get(tool_name)
+            if tool_instance:
+                fn = getattr(tool_instance, method, None)
                 if fn:
-                    observation = fn(**kwargs)
+                    try:
+                        observation = fn(**kwargs)
+                    except Exception as e:
+                        observation = f"[Error] {tool_name}.{method} raised: {e}"
                 else:
-                    observation = f"[Error] Unknown method: {method}"
+                    observation = f"[Error] {tool_name} has no method '{method}'"
             else:
-                observation = f"[Error] Unknown tool: {tool}"
+                observation = f"[Error] Unknown tool: {tool_name}. Available: {', '.join(tools.keys())}"
 
-            print(f"   Observation: {observation[:120]}...\n")
-            action_str = f"Action taken: {tool}.{method}({kwargs})\nObservation: {observation}"
-            full_context += f"\n\n--- ACTION LOG ---\n{action_str}"
+            obs_preview = str(observation)[:200]
+            print(f"   Observation: {obs_preview}...")
+
+            # ── Reflect: Append observation + reflection prompt ──
+            action_str = f"Action taken: {tool_name}.{method}({kwargs})\nObservation: {observation}"
+            reflection = (
+                "\n--- REFLECT ---\n"
+                "Evaluate: Did this action achieve the goal? "
+                "If yes, provide the final answer. If not, decide the next action."
+            )
+            full_context += f"\n\n--- ACTION LOG ---\n{action_str}{reflection}"
 
         else:
             print(f"   [Warning] Unknown action type: {action_type}")
@@ -195,7 +212,7 @@ def run_code_aware_pipeline(
     llm,
     project_context: str,
     available_tools: str,
-    file_editor: FileEditorTool,
+    tools: Dict,
     history=None,
     rebuild_index: bool = False,
     ctx: Optional[PipelineContext] = None,
@@ -351,7 +368,7 @@ def run_code_aware_pipeline(
         question=question,
         initial_context=initial_context,
         llm=llm,
-        file_editor=file_editor,
+        tools=tools,
         available_tools=available_tools,
         project_structure=project_structure,
         extra_context_prefix=extra_prefix,
@@ -460,7 +477,7 @@ def run_local_pipeline(
     llm,
     project_context: str,
     available_tools: str,
-    file_editor: FileEditorTool,
+    tools: Dict,
     history=None,
     rebuild_index: bool = False,
     ctx: Optional[PipelineContext] = None,
@@ -575,7 +592,7 @@ def run_local_pipeline(
         question=question,
         initial_context=initial_context,
         llm=llm,
-        file_editor=file_editor,
+        tools=tools,
         available_tools=available_tools,
         project_structure=project_structure,
         history=history,
